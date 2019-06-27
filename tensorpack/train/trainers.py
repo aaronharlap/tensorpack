@@ -185,6 +185,8 @@ class SyncMultiGPUTrainerReplicated(SingleCostTrainer):
     def _setup_graph(self, input, get_cost_fn, get_opt_fn):
         if len(self.devices) > 1:
             assert isinstance(input, FeedfreeInput), input
+
+        logger.info("Running +++++++ _setup_graph for SyncMultiGPUTrainerReplicated")
         tower_fn = self._make_get_grad_fn(input, get_cost_fn, get_opt_fn)
         grad_list = self._builder.call_for_each_tower(tower_fn)
         self.train_op, post_init_op = self._builder.build(grad_list, get_opt_fn)
@@ -258,7 +260,7 @@ class DistributedTrainerReplicated(DistributedTrainerBase):
     __doc__ = DistributedReplicatedBuilder.__doc__
 
     @map_arg(gpus=_int_to_range)
-    def __init__(self, gpus, server):
+    def __init__(self, gpus, server, aggregation_frequency):
         """
         Args:
             gpus (list[int]): list of GPU ids.
@@ -269,7 +271,7 @@ class DistributedTrainerReplicated(DistributedTrainerBase):
         if self.job_name == 'ps':
             self.join()
 
-        self._builder = DistributedReplicatedBuilder(gpus, server)
+        self._builder = DistributedReplicatedBuilder(gpus, server, aggregation_frequency)
         self.is_chief = self._builder.is_chief
 
     def _setup_input(self, input_signature, input):
@@ -282,6 +284,7 @@ class DistributedTrainerReplicated(DistributedTrainerBase):
             assert not input.setup_done()
             return input.setup(input_signature)
 
+    '''
     def _setup_graph(self, input, get_cost_fn, get_opt_fn):
         assert isinstance(input, FeedfreeInput), input
         self.train_op, initial_sync_op, model_sync_op = self._builder.build(
@@ -293,6 +296,31 @@ class DistributedTrainerReplicated(DistributedTrainerBase):
                    run_before=True, run_as_trigger=False, verbose=True)
         cb.chief_only = False
         callbacks.append(cb)
+
+        logger.info("Sync OP::+++++  ", model_sync_op)
+
+        # Sync model_variables to PS, only chief needs to do this
+        if model_sync_op:
+            cb = RunOp(lambda: model_sync_op,
+                       run_before=False, run_as_trigger=True, verbose=True)
+            logger.warn("For efficiency, local MODEL_VARIABLES are only synced to PS once "
+                        "every epoch. Be careful if you save the model more frequently than this.")
+            callbacks.append(cb)
+        return callbacks
+    '''
+    def _setup_graph(self, input, get_cost_fn, get_opt_fn):
+        assert isinstance(input, FeedfreeInput), input
+        self.train_op, self.comm_op, initial_sync_op, model_sync_op = self._builder.build(
+            self._make_get_grad_fn(input, get_cost_fn, get_opt_fn), get_opt_fn)
+
+        callbacks = []
+        # Initial syncing vars from PS
+        cb = RunOp(lambda: initial_sync_op,
+                   run_before=True, run_as_trigger=False, verbose=True)
+        cb.chief_only = False
+        callbacks.append(cb)
+
+        logger.info("Sync OP::+++++  ", model_sync_op)
 
         # Sync model_variables to PS, only chief needs to do this
         if model_sync_op:

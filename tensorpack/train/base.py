@@ -178,6 +178,11 @@ class Trainer(object):
             raise NotImplementedError(
                 "Please either set `Trainer.train_op` or provide an implementation "
                 "of Trainer.run_step()!")
+        self.hooked_sess.run([self.train_op, self.comm_op])
+        # self.hooked_sess.run(self.comm_op)
+        # Here call comm_op
+
+    def run_step_train_only(self):
         self.hooked_sess.run(self.train_op)
 
     @call_only_once
@@ -255,7 +260,7 @@ class Trainer(object):
             session_creator=ReuseSessionCreator(self.sess), hooks=hooks)
 
     @call_only_once
-    def main_loop(self, steps_per_epoch, starting_epoch, max_epoch):
+    def main_loop(self, steps_per_epoch, starting_epoch, max_epoch, aggregation_frequency):
         """
         Run the main training loop.
 
@@ -275,10 +280,16 @@ class Trainer(object):
                     logger.info("Start Epoch {} ...".format(self.loop.epoch_num))
                     self._callbacks.before_epoch()
                     start_time = time.time()
+                    self.loop.steps_per_epoch -= self.loop.steps_per_epoch % aggregation_frequency
                     for self.loop._local_step in range(self.loop.steps_per_epoch):
+                        # print ("Step: ", self.loop._local_step)
                         if self.hooked_sess.should_stop():
                             return
-                        self.run_step()  # implemented by subclass
+
+                        if (self.loop._local_step + 1) % aggregation_frequency == 0:
+                            self.run_step()  # implemented by subclass
+                        else:
+                            self.run_step_train_only()
                         self._callbacks.trigger_step()
                     self._callbacks.after_epoch()
                     logger.info("Epoch {} (global_step {}) finished, time:{}.".format(
@@ -299,7 +310,8 @@ class Trainer(object):
     def train(self,
               callbacks, monitors,
               session_creator, session_init,
-              steps_per_epoch, starting_epoch=1, max_epoch=9999999):
+              steps_per_epoch, starting_epoch=1,
+              max_epoch=9999999, aggregation_frequency=1):
         """
         Implemented by three lines:
 
@@ -313,14 +325,14 @@ class Trainer(object):
         """
         self.setup_callbacks(callbacks, monitors)
         self.initialize(session_creator, session_init)
-        self.main_loop(steps_per_epoch, starting_epoch, max_epoch)
+        self.main_loop(steps_per_epoch, starting_epoch, max_epoch, aggregation_frequency)
 
     def train_with_defaults(
             self, _sentinel=None,
             callbacks=None, monitors=None,
             session_creator=None, session_init=None,
             steps_per_epoch=None, starting_epoch=1, max_epoch=9999999,
-            extra_callbacks=None):
+            extra_callbacks=None, aggregation_frequency=1):
         """
         Same as :meth:`train()`, except:
 
@@ -341,7 +353,8 @@ class Trainer(object):
 
         self.train(callbacks, monitors,
                    session_creator, session_init,
-                   steps_per_epoch, starting_epoch, max_epoch)
+                   steps_per_epoch, starting_epoch,
+                   max_epoch, aggregation_frequency)
 
     def __new__(cls, *args, **kwargs):
         if (len(args) > 0 and isinstance(args[0], TrainConfig)) \
