@@ -320,8 +320,6 @@ class DistributedTrainerReplicated(DistributedTrainerBase):
         cb.chief_only = False
         callbacks.append(cb)
 
-        logger.info("Sync OP::+++++  ", model_sync_op)
-
         # Sync model_variables to PS, only chief needs to do this
         if model_sync_op:
             cb = RunOp(lambda: model_sync_op,
